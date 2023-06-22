@@ -27,10 +27,10 @@ model_params:
 dataset_params:
   training_size: 19132
   dataset_type: "point_image_dataset_semkitti"
-  pc_dataset_type: "SemanticKITTI"
+  pc_dataset_type: "Coda_test"
   collate_type: "collate_fn_default"
   ignore_label: 0
-  label_mapping: "./config/label_mapping/semantic-kitti.yaml"
+  label_mapping: "./config/label_mapping/coda_test.yaml"
 
   # 2D augmentation
   bottom_crop:

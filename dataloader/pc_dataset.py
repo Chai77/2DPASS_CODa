@@ -25,9 +25,12 @@ def get_pc_model_class(name):
     return REGISTERED_PC_DATASET_CLASSES[name]
 
 
-def absoluteFilePaths(directory, num_vote):
+def absoluteFilePaths(directory, num_vote, coda=False):
     for dirpath, _, filenames in os.walk(directory):
-        filenames.sort()
+        if not coda:
+            filenames.sort()
+        else:
+            filenames.sort(key=lambda x: int(re.findall(r'\d+', x)[-1]))
         for f in filenames:
             for _ in range(num_vote):
                 yield os.path.abspath(os.path.join(dirpath, f))
@@ -114,7 +117,115 @@ class SemanticKITTI(data.Dataset):
                 annotated_data -= 1
                 annotated_data[annotated_data == -1] = self.config['dataset_params']['ignore_label']
 
-        image_file = self.im_idx[index].replace('velodyne', 'image_2').replace('.bin', '.png')
+        image_file = self.im_idx[index].replace('velodyne', 'image_2').replace('.bin', '.png').replace('/public_datasets/semantickitti/', '/ceranki/kitti_images/dataset/')
+        image = Image.open(image_file)
+        proj_matrix = self.proj_matrix[int(self.im_idx[index][-22:-20])]
+
+        data_dict = {}
+        data_dict['xyz'] = points
+        data_dict['labels'] = annotated_data.astype(np.uint8)
+        data_dict['instance_label'] = instance_label
+        data_dict['signal'] = raw_data[:, 3:4]
+        data_dict['origin_len'] = origin_len
+        data_dict['img'] = image
+        data_dict['proj_matrix'] = proj_matrix
+
+        return data_dict, self.im_idx[index]
+
+@register_dataset
+class Coda_test(data.Dataset):
+    def __init__(self, config, data_path, imageset='train', num_vote=1):
+        with open(config['dataset_params']['label_mapping'], 'r') as stream:
+            codayaml = yaml.safe_load(stream)
+
+        self.config = config
+        self.num_vote = num_vote
+        self.learning_map = codayaml['learning_map']
+        self.imageset = imageset
+
+
+        self.im_idx = []
+        self.im_idx += absoluteFilePaths('/'.join([data_path, "3d_semantic/os1"]), num_vote, True)
+        self.proj_matrix = {}
+        
+        train_set = 0.8
+        train_size = int(len(self.im_idx) * train_set)
+        if (self.imageset == "train"):
+            self.im_idx = [self.im_idx[val] for val in range(train_size)]
+        elif(self.imageset == "val"):
+            self.im_idx = [self.im_idx[val] for val in range(train_size, len(self.im_idx))]
+        elif(self.imageset == "test"):
+            self.im_idx = []
+            split = [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            for i_folder in split:
+                print('/'.join([data_path, "3d_raw/os1", str(i_folder)]))
+                self.im_idx += absoluteFilePaths('/'.join([data_path, "3d_raw/os1", str(i_folder)]), True)
+                # TODO: per folder get the calibration matrix for test dataset
+                # calib_path = os.path.join(data_path, str(i_folder).zfill(2), "calib.txt")
+                # calib = self.read_calib(calib_path)
+                # proj_matrix = np.matmul(calib["P2"], calib["Tr"])
+                # self.proj_matrix[i_folder] = proj_matrix
+
+        else:
+            raise Exception('Split must be train/val/test')
+        
+        if self.imageset == "train" or self.imageset == "val":
+            # TODO: get the calibration matrix for the train and val dataset, which is just the calibration matrix for folder 2
+
+            # calib_path = os.path.join(data_path, str(i_folder).zfill(2), "calib.txt")
+            # calib = self.read_calib(calib_path)
+            # proj_matrix = np.matmul(calib["P2"], calib["Tr"])
+            # self.proj_matrix[2] = proj_matrix
+            pass
+
+        seg_num_per_class = config['dataset_params']['seg_labelweights']
+        seg_labelweights = seg_num_per_class / np.sum(seg_num_per_class)
+        self.seg_labelweights = np.power(np.amax(seg_labelweights) / seg_labelweights, 1 / 3.0)
+
+    def __len__(self):
+        return len(self.im_idx)
+
+    @staticmethod
+    def read_calib(calib_path):
+        """
+        :param calib_path: Path to a calibration text file.
+        :return: dict with calibration matrices.
+        """
+        calib_all = {}
+        with open(calib_path, 'r') as f:
+            for line in f.readlines():
+                if line == '\n':
+                    break
+                key, value = line.split(':', 1)
+                calib_all[key] = np.array([float(x) for x in value.split()])
+
+        # reshape matrices
+        calib_out = {}
+        calib_out['P0'] = calib_all['P2'].reshape(3, 4)  # 3x4 projection matrix for left camera
+        calib_out['Tr_vel_to_cam'] = np.identity(4)  # 4x4 matrix
+        calib_out['Tr_vel_to_cam'][:3, :4] = calib_all['Tr_vel_to_cam'].reshape(3, 4)
+
+        return calib_out
+
+    def __getitem__(self, index):
+        raw_data = np.fromfile(self.im_idx[index].replace('semantic', 'raw'), dtype=np.float32).reshape((-1, 4))
+        origin_len = len(raw_data)
+        points = raw_data[:, :3]
+        if self.imageset == 'test':
+            annotated_data = np.expand_dims(np.zeros_like(raw_data[:, 0], dtype=int), axis=1)
+            instance_label = np.expand_dims(np.zeros_like(raw_data[:, 0], dtype=int), axis=1)
+        else:
+            with open(self.im_idx[index].replace('raw', 'semantic'), "rb") as annotated_file:
+                annotated_data = np.array(list(annotated_file.read())).reshape((-1, 1))
+            annotated_data = np.vectorize(self.learning_map.__getitem__)(annotated_data)
+            instance_label = annotated_data >> 16 # TODO: see what this should actually be
+
+
+        data_tuple = (raw_data[:, :3], annotated_data.astype(np.uint8))
+        if self.return_ref:
+            data_tuple += (raw_data[:, 3],)
+
+        image_file = self.im_idx[index].replace('3d_semantic', '2d_raw').replace('os1', 'cam0').replace('.bin', '.png').replace('3d_semantic_os1', '2d_raw_cam0')
         image = Image.open(image_file)
         proj_matrix = self.proj_matrix[int(self.im_idx[index][-22:-20])]
 
