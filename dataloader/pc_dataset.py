@@ -1,6 +1,7 @@
 import os
 import yaml
 import numpy as np
+import re
 
 from PIL import Image
 from torch.utils import data
@@ -160,23 +161,20 @@ class Coda_test(data.Dataset):
             for i_folder in split:
                 print('/'.join([data_path, "3d_raw/os1", str(i_folder)]))
                 self.im_idx += absoluteFilePaths('/'.join([data_path, "3d_raw/os1", str(i_folder)]), True)
-                # TODO: per folder get the calibration matrix for test dataset
-                # calib_path = os.path.join(data_path, str(i_folder).zfill(2), "calib.txt")
-                # calib = self.read_calib(calib_path)
-                # proj_matrix = np.matmul(calib["P2"], calib["Tr"])
-                # self.proj_matrix[i_folder] = proj_matrix
+                calib_path = os.path.join([data_path, 'calibrations', str(i_folder)])
+                calib = self.read_calib(calib_path)
+                proj_matrix = np.matmul(calib["P0"], calib["Tr"])
+                self.proj_matrix[i_folder] = proj_matrix
 
         else:
             raise Exception('Split must be train/val/test')
         
         if self.imageset == "train" or self.imageset == "val":
-            # TODO: get the calibration matrix for the train and val dataset, which is just the calibration matrix for folder 2
-
-            # calib_path = os.path.join(data_path, str(i_folder).zfill(2), "calib.txt")
-            # calib = self.read_calib(calib_path)
-            # proj_matrix = np.matmul(calib["P2"], calib["Tr"])
-            # self.proj_matrix[2] = proj_matrix
-            pass
+            for i in range(23):
+                calib_path = '/'.join([data_path, 'calibrations', str(i)])
+                calib = self.read_calib(calib_path)
+                proj_matrix = np.matmul(calib["P0"], calib["Tr"])
+                self.proj_matrix[i] = proj_matrix
 
         seg_num_per_class = config['dataset_params']['seg_labelweights']
         seg_labelweights = seg_num_per_class / np.sum(seg_num_per_class)
@@ -185,25 +183,31 @@ class Coda_test(data.Dataset):
     def __len__(self):
         return len(self.im_idx)
 
-    @staticmethod
-    def read_calib(calib_path):
+    def load_ext_calib_to_mat(self, calib_ext_file, matrix_type):
+        calib_ext = open(calib_ext_file, 'r')
+        calib_ext = yaml.safe_load(calib_ext)[matrix_type]
+        ext_homo_mat    = np.array(calib_ext['data']).reshape(
+            calib_ext['rows'], calib_ext['cols']
+        )
+        return ext_homo_mat
+
+
+    def read_calib(self, calib_path):
         """
         :param calib_path: Path to a calibration text file.
         :return: dict with calibration matrices.
         """
-        calib_all = {}
-        with open(calib_path, 'r') as f:
-            for line in f.readlines():
-                if line == '\n':
-                    break
-                key, value = line.split(':', 1)
-                calib_all[key] = np.array([float(x) for x in value.split()])
+        P0_matrix = self.load_ext_calib_to_mat('/'.join([calib_path, 'calib_cam0_intrinsics.yaml']), 'projection_matrix')
+        Tr_matrix = self.load_ext_calib_to_mat('/'.join([calib_path, 'calib_os1_to_cam0.yaml']), 'extrinsic_matrix')
 
         # reshape matrices
         calib_out = {}
-        calib_out['P0'] = calib_all['P2'].reshape(3, 4)  # 3x4 projection matrix for left camera
-        calib_out['Tr_vel_to_cam'] = np.identity(4)  # 4x4 matrix
-        calib_out['Tr_vel_to_cam'][:3, :4] = calib_all['Tr_vel_to_cam'].reshape(3, 4)
+        calib_out['P0'] = P0_matrix
+        calib_out['Tr'] = Tr_matrix
+
+        for i in range(100):
+            if i not in self.learning_map:
+                self.learning_map[i] = 0
 
         return calib_out
 
@@ -218,16 +222,13 @@ class Coda_test(data.Dataset):
             with open(self.im_idx[index].replace('raw', 'semantic'), "rb") as annotated_file:
                 annotated_data = np.array(list(annotated_file.read())).reshape((-1, 1))
             annotated_data = np.vectorize(self.learning_map.__getitem__)(annotated_data)
-            instance_label = annotated_data >> 16 # TODO: see what this should actually be
-
-
-        data_tuple = (raw_data[:, :3], annotated_data.astype(np.uint8))
-        if self.return_ref:
-            data_tuple += (raw_data[:, 3],)
+            print(annotated_data.shape)
+            instance_label = np.zeros_like(annotated_data) 
 
         image_file = self.im_idx[index].replace('3d_semantic', '2d_raw').replace('os1', 'cam0').replace('.bin', '.png').replace('3d_semantic_os1', '2d_raw_cam0')
         image = Image.open(image_file)
-        proj_matrix = self.proj_matrix[int(self.im_idx[index][-22:-20])]
+        print(image)
+        proj_matrix = self.proj_matrix[int(self.im_idx[index].split('/')[-2])]
 
         data_dict = {}
         data_dict['xyz'] = points
