@@ -153,6 +153,7 @@ class get_model(LightningBaseModel):
             )
 
         # decoder layer
+        print("BASELINE NUM CLASSES ", self.num_classes)
         self.classifier = nn.Sequential(
             nn.Linear(self.hiden_size * self.num_scales, 128),
             nn.ReLU(True),
@@ -161,6 +162,25 @@ class get_model(LightningBaseModel):
 
         # loss
         self.criterion = criterion(config)
+
+    def on_load_checkpoint(self, checkpoint):
+        state_dict = checkpoint["state_dict"]
+        model_state_dict = self.state_dict()
+        is_changed = False
+        for k in state_dict:
+            if k in model_state_dict:
+                if state_dict[k].shape != model_state_dict[k].shape:
+                    print(f"Skip loading parameter: {k}, "
+                                f"required shape: {model_state_dict[k].shape}, "
+                                f"loaded shape: {state_dict[k].shape}")
+                    state_dict[k] = model_state_dict[k]
+                    is_changed = True
+            else:
+                print(f"Dropping parameter {k}")
+                is_changed = True
+
+        if is_changed:
+            checkpoint.pop("optimizer_states", None)
 
     def forward(self, data_dict):
         with torch.no_grad():

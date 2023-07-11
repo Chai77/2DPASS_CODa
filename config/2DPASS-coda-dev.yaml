@@ -18,9 +18,9 @@ model_params:
     - 16
 
   hiden_size: 64
-  num_classes: 20
+  num_classes: 25
   backbone_2d: resnet34
-  pretrained2d: False
+  pretrained2d: False # for finetuning set this to True
 
 ###################
 ## Dataset options
@@ -54,31 +54,36 @@ dataset_params:
     - -4
   seg_labelweights:
     - 0
-    - 55437630
-    - 320797
-    - 541736
-    - 2578735
-    - 3274484
-    - 552662
-    - 184064
-    - 78858
-    - 240942562
-    - 17294618
-    - 170599734
-    - 6369672
-    - 230413074
-    - 101130274
-    - 476491114
-    - 9833174
-    - 129609852
-    - 4506626
-    - 1168181
+    - 35331535
+    - 507127
+    - 6769866
+    - 26589757
+    - 1365410
+    - 2120036
+    - 5660683
+    - 8490475
+    - 19117590
+    - 40037811
+    - 15765062
+    - 3171941
+    - 3911672 # metal grates
+    - 331313
+    - 6031076 # wood panel
+    - 2073449
+    - 3450963 # carpet
+    - 7928482
+    - 1547906
+    - 1863293
+    - 3851428
+    - 48795
+    - 160104
+    - 418510
 
   train_data_loader:
     data_path: "/robodata/arthurz/Datasets/CODa_dev"
     batch_size: 8
     shuffle: True
-    num_workers: 8
+    num_workers: 1
     rotate_aug: True
     flip_aug: True
     scale_aug: True
@@ -88,7 +93,7 @@ dataset_params:
   val_data_loader:
     data_path: "/robodata/arthurz/Datasets/CODa_dev"
     shuffle: False
-    num_workers: 8
+    num_workers: 1
 
     # normal test
     batch_size: 8

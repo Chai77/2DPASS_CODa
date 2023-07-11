@@ -42,7 +42,7 @@ def parse_config():
     # general
     parser.add_argument('--gpu', type=int, nargs='+', default=(0,), help='specify gpu devices')
     parser.add_argument("--seed", default=0, type=int)
-    parser.add_argument('--config_path', default='config/2DPASS-coda-test.yaml')
+    parser.add_argument('--config_path', default='config/2DPASS-coda-dev.yaml')
     # training
     parser.add_argument('--log_dir', type=str, default='default', help='log location')
     parser.add_argument('--monitor', type=str, default='val/mIoU', help='the maximum metric')
@@ -178,7 +178,10 @@ if __name__ == '__main__':
     if configs.checkpoint is not None:
         print('load pre-trained model...')
         if configs.fine_tune or configs.test or configs.pretrain2d:
+            print("Entered load chcecpoint", configs.pretrain2d)
+            # my_model = my_model.load_checkpoint_expand(configs.checkpoint, strict=(not configs.pretrain2d), configs=config)
             my_model = my_model.load_from_checkpoint(configs.checkpoint, config=configs, strict=(not configs.pretrain2d))
+
         else:
             # continue last training
             my_model = my_model.load_from_checkpoint(configs.checkpoint)

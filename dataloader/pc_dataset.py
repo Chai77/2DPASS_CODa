@@ -2,6 +2,8 @@ import os
 import yaml
 import numpy as np
 import re
+import json
+from os.path import join
 
 from PIL import Image
 from torch.utils import data
@@ -146,28 +148,29 @@ class Coda_test(data.Dataset):
 
 
         self.im_idx = []
-        self.im_idx += absoluteFilePaths('/'.join([data_path, "3d_semantic/os1"]), num_vote, True)
+        # self.im_idx += absoluteFilePaths('/'.join([data_path, "3d_semantic/os1"]), num_vote, True)
+        self.load_frame_list(data_path)
         self.proj_matrix = {}
         
-        train_set = 0.8
-        train_size = int(len(self.im_idx) * train_set)
-        if (self.imageset == "train"):
-            self.im_idx = [self.im_idx[val] for val in range(train_size)]
-        elif(self.imageset == "val"):
-            self.im_idx = [self.im_idx[val] for val in range(train_size, len(self.im_idx))]
-        elif(self.imageset == "test"):
-            self.im_idx = []
-            split = [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
-            for i_folder in split:
-                print('/'.join([data_path, "3d_raw/os1", str(i_folder)]))
-                self.im_idx += absoluteFilePaths('/'.join([data_path, "3d_raw/os1", str(i_folder)]), True)
-                calib_path = os.path.join([data_path, 'calibrations', str(i_folder)])
-                calib = self.read_calib(calib_path)
-                proj_matrix = np.matmul(calib["P0"], calib["Tr"])
-                self.proj_matrix[i_folder] = proj_matrix
+        # train_set = 0.8
+        # train_size = int(len(self.im_idx) * train_set)
+        # if (self.imageset == "train"):
+        #     self.im_idx = [self.im_idx[val] for val in range(train_size)]
+        # elif(self.imageset == "val"):
+        #     self.im_idx = [self.im_idx[val] for val in range(train_size, len(self.im_idx))]
+        # elif(self.imageset == "test"):
+        #     self.im_idx = []
+        #     split = [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+        #     for i_folder in split:
+        #         print('/'.join([data_path, "3d_raw/os1", str(i_folder)]))
+        #         self.im_idx += absoluteFilePaths('/'.join([data_path, "3d_raw/os1", str(i_folder)]), True)
+        #         calib_path = os.path.join([data_path, 'calibrations', str(i_folder)])
+        #         calib = self.read_calib(calib_path)
+        #         proj_matrix = np.matmul(calib["P0"], calib["Tr"])
+        #         self.proj_matrix[i_folder] = proj_matrix
 
-        else:
-            raise Exception('Split must be train/val/test')
+        # else:
+        #     raise Exception('Split must be train/val/test')
         
         if self.imageset == "train" or self.imageset == "val":
             for i in range(23):
@@ -191,6 +194,34 @@ class Coda_test(data.Dataset):
         )
         return ext_homo_mat
 
+    def load_frame_list(self, data_path):
+        # Loop through all metadata files and build train, val, test list
+        metadata_dir = join(data_path, "metadata")
+        metadata_files = [file for file in os.listdir(metadata_dir) if file.endswith(".json")]
+        
+        imset_map = {
+            "train": "training",
+            "val": "validation",
+            "test": "testing"
+        }
+        imageset = imset_map[self.imageset]
+        for metadata_file in metadata_files:
+            meta_path = join(metadata_dir, metadata_file)
+
+            meta_dict = json.load(open(meta_path, 'r'))
+            self.im_idx.extend(meta_dict['SemanticSegmentation'][imageset])
+
+        self.im_idx = [join(data_path, subpath) for subpath in self.im_idx]
+
+        def helper_filesplitter(subpath):
+            fname = subpath.split('/')[-1]
+            fname_pre = fname.split('.')[0]
+            index = int(''.join(fname_pre.split('_')[-2:-1]))
+            return index
+
+        if imageset=="testing":
+            # Sort test split for better image demos
+            self.im_idx = sorted(self.im_idx, key=helper_filesplitter)
 
     def read_calib(self, calib_path):
         """
@@ -222,12 +253,10 @@ class Coda_test(data.Dataset):
             with open(self.im_idx[index].replace('raw', 'semantic'), "rb") as annotated_file:
                 annotated_data = np.array(list(annotated_file.read())).reshape((-1, 1))
             annotated_data = np.vectorize(self.learning_map.__getitem__)(annotated_data)
-            print(annotated_data.shape)
             instance_label = np.zeros_like(annotated_data) 
 
         image_file = self.im_idx[index].replace('3d_semantic', '2d_raw').replace('os1', 'cam0').replace('.bin', '.png').replace('3d_semantic_os1', '2d_raw_cam0')
         image = Image.open(image_file)
-        print(image)
         proj_matrix = self.proj_matrix[int(self.im_idx[index].split('/')[-2])]
 
         data_dict = {}

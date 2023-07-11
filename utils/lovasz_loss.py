@@ -179,6 +179,12 @@ def lovasz_softmax_flat(probas, labels, classes='present'):
     if probas.numel() == 0:
         # only void pixels, the gradients should be 0
         return probas * 0.
+    if probas.shape[0] != labels.shape[0]:
+        print("probas shape ", probas.shape)
+        print("labels shape ", labels.shape)
+        probas = probas.unsqueeze(0)
+    assert probas.shape[0] == labels.shape[0], "prob logits %i and labels %i shape dont match" % (probas.shape[0], labels.shape[0])
+    assert probas.dim()==2 and labels.dim()==1, "Number dimensions is wrong for proba or labels"
     C = probas.size(1)
     losses = []
     class_to_sum = list(range(C)) if classes in ['all', 'present'] else classes
@@ -197,6 +203,7 @@ def lovasz_softmax_flat(probas, labels, classes='present'):
         perm = perm.data
         fg_sorted = fg[perm]
         losses.append(torch.dot(errors_sorted, Variable(lovasz_grad(fg_sorted))))
+    # print("mean losses shape ", mean(losses).shape)
     return mean(losses)
 
 
@@ -207,17 +214,19 @@ def flatten_probas(probas, labels, ignore=None):
     if probas.dim() == 3:
         # assumes output of a sigmoid layer
         B, C, N = probas.size()
-        probas = probas.view(B, C, 1, N).permute(0, 2, 3, 1).contiguous().view(-1, C)
+        probas = probas.view(B, C, 1, N).permute(0, 2, 3, 1).contiguous().view(-1, C) # NxBx1xC
     elif probas.dim() == 5:
         # 3D segmentation
         B, C, L, H, W = probas.size()
         probas = probas.contiguous().permute(0, 2, 3, 4, 1).contiguous().view(-1, C)
     # B, C, H, W = probas.size()
     # probas = probas.permute(0, 2, 3, 1).contiguous().view(-1, C)  # B * H * W, C = P, C
-    labels = labels.view(-1)
+    labels = labels.view(-1) # NxBx1
     if ignore is None:
         return probas, labels
     valid = (labels != ignore)
+
+    # to check if everything was invalid, if set vprobsa manually so it's the correct shape
     vprobas = probas[valid.nonzero(as_tuple=False).squeeze()]
     vlabels = labels[valid]
     return vprobas, vlabels

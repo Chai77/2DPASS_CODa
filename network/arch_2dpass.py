@@ -9,6 +9,34 @@ from network.baseline import get_model as SPVCNN
 from network.base_model import LightningBaseModel
 from network.basic_block import ResNetFCN
 
+
+
+
+
+import ast
+import csv
+import inspect
+import logging
+import os
+from argparse import Namespace
+from copy import deepcopy
+from functools import partial
+from typing import Any, Callable, Dict, IO, MutableMapping, Optional, Union
+from warnings import warn
+
+import torch
+import yaml
+
+from pytorch_lightning.utilities import _OMEGACONF_AVAILABLE, AttributeDict, rank_zero_warn
+from pytorch_lightning.utilities.apply_func import apply_to_collection
+from pytorch_lightning.utilities.cloud_io import get_filesystem
+from pytorch_lightning.utilities.cloud_io import load as pl_load
+from pytorch_lightning.utilities.parsing import parse_class_init_keys
+
+CHECKPOINT_HYPER_PARAMS_KEY = 'hyper_parameters'
+CHECKPOINT_HYPER_PARAMS_NAME = 'hparams_name'
+CHECKPOINT_HYPER_PARAMS_TYPE = 'hparams_type'
+
 class xModalKD(nn.Module):
     def __init__(self,config):
         super(xModalKD, self).__init__()
@@ -44,6 +72,7 @@ class xModalKD(nn.Module):
             self.fcs1.append(nn.Sequential(nn.Linear(self.hiden_size * 2, self.hiden_size)))
             self.fcs2.append(nn.Sequential(nn.Linear(self.hiden_size, self.hiden_size)))
 
+        print("NUM CLASSES xMOdalKD ", self.num_classes)
         self.classifier = nn.Sequential(
             nn.Linear(self.hiden_size * self.num_scales, 128),
             nn.ReLU(True),
@@ -59,6 +88,25 @@ class xModalKD(nn.Module):
 
         self.ce_loss = nn.CrossEntropyLoss(weight=seg_labelweights, ignore_index=config['dataset_params']['ignore_label'])
         self.lovasz_loss = Lovasz_loss(ignore=config['dataset_params']['ignore_label'])
+
+    def on_load_checkpoint(self, checkpoint):
+        state_dict = checkpoint["state_dict"]
+        model_state_dict = self.state_dict()
+        is_changed = False
+        for k in state_dict:
+            if k in model_state_dict:
+                if state_dict[k].shape != model_state_dict[k].shape:
+                    print(f"Skip loading parameter: {k}, "
+                                f"required shape: {model_state_dict[k].shape}, "
+                                f"loaded shape: {state_dict[k].shape}")
+                    state_dict[k] = model_state_dict[k]
+                    is_changed = True
+            else:
+                print(f"Dropping parameter {k}")
+                is_changed = True
+
+        if is_changed:
+            checkpoint.pop("optimizer_states", None)
 
     @staticmethod
     def p2img_mapping(pts_fea, p2img_idx, batch_idx):
@@ -77,7 +125,13 @@ class xModalKD(nn.Module):
         return labels
 
     def seg_loss(self, logits, labels):
+        if logits.dim()==1:
+            print("Logits is shape of num classes %i, adding another dimension" % logits.shape[0])
+            logits = torch.unsqueeze(logits, 0)
+        assert logits.dim()>1, "Logits dimensions is one or less %i" %logits.dim()
+
         ce_loss = self.ce_loss(logits, labels)
+        assert logits.dim()>1, "Logits dimensions is one or less %i" %logits.dim()
         lovasz_loss = self.lovasz_loss(F.softmax(logits, dim=1), labels)
         return ce_loss + lovasz_loss
 
@@ -118,7 +172,6 @@ class xModalKD(nn.Module):
             F.softmax(fuse_pred.detach(), dim=1),
         )
         loss += xm_loss * self.lambda_xm / self.num_scales
-
         return loss, fuse_feat
 
     def forward(self, data_dict):
@@ -130,11 +183,17 @@ class xModalKD(nn.Module):
             img_seg_feat.append(fuse_feat)
             loss += singlescale_loss
 
-        img_seg_logits = self.classifier(torch.cat(img_seg_feat, 1))
-        loss += self.seg_loss(img_seg_logits, data_dict['img_label'])
-        data_dict['loss'] += loss
-
-        return data_dict
+        try:
+            img_seg_logits = self.classifier(torch.cat(img_seg_feat, 1))
+            loss += self.seg_loss(img_seg_logits, data_dict['img_label'])
+            # print("loss shape ", loss.shape)
+            # print("data dict loss shape ",  data_dict['loss'].shape )
+            data_dict['loss'] += loss
+            
+            return data_dict
+        except Exception as e:
+            print("error ", e) # error  output with shape [] doesn't match the broadcast shape [0, 25]
+            return data_dict
 
 
 class get_model(LightningBaseModel):
@@ -160,6 +219,25 @@ class get_model(LightningBaseModel):
         else:
             print('Start vanilla training!')
 
+    def on_load_checkpoint(self, checkpoint):
+        state_dict = checkpoint["state_dict"]
+        model_state_dict = self.state_dict()
+        is_changed = False
+        for k in state_dict:
+            if k in model_state_dict:
+                if state_dict[k].shape != model_state_dict[k].shape:
+                    print(f"Skip loading parameter: {k}, "
+                                f"required shape: {model_state_dict[k].shape}, "
+                                f"loaded shape: {state_dict[k].shape}")
+                    state_dict[k] = model_state_dict[k]
+                    is_changed = True
+            else:
+                print(f"Dropping parameter {k}")
+                is_changed = True
+
+        if is_changed:
+            checkpoint.pop("optimizer_states", None)
+
     def forward(self, data_dict):
         # 3D network
         data_dict = self.model_3d(data_dict)
@@ -170,3 +248,69 @@ class get_model(LightningBaseModel):
             data_dict = self.fusion(data_dict)
 
         return data_dict
+    
+    # def load_checkpoint_expand(self, checkpoint_path, strict, **kwargs):
+    #     checkpoint = pl_load(checkpoint_path, map_location=lambda storage, loc: storage)
+
+    #     # for past checkpoint need to add the new key
+    #     if CHECKPOINT_HYPER_PARAMS_KEY not in checkpoint:
+    #         checkpoint[CHECKPOINT_HYPER_PARAMS_KEY] = {}
+    #     # override the hparams with values that were passed in
+    #     checkpoint[CHECKPOINT_HYPER_PARAMS_KEY].update(kwargs)
+
+    #     model = self._load_model_state_extension(checkpoint, strict=strict, **kwargs)
+    #     return model
+
+    # def _load_model_state_extension(self, checkpoint, strict, **kwargs):
+    #     import pdb; pdb.set_trace()
+    #     return None
+
+
+    # @classmethod
+    # def _load_model_state(cls, checkpoint: Dict[str, Any], strict: bool = True, **cls_kwargs_new):
+    #     cls_spec = inspect.getfullargspec(cls.__init__)
+    #     cls_init_args_name = inspect.signature(cls.__init__).parameters.keys()
+
+    #     self_var, args_var, kwargs_var = parse_class_init_keys(cls)
+    #     drop_names = [n for n in (self_var, args_var, kwargs_var) if n]
+    #     cls_init_args_name = list(filter(lambda n: n not in drop_names, cls_init_args_name))
+
+    #     cls_kwargs_loaded = {}
+    #     # pass in the values we saved automatically
+    #     if cls.CHECKPOINT_HYPER_PARAMS_KEY in checkpoint:
+
+    #         # 1. (backward compatibility) Try to restore model hparams from checkpoint using old/past keys
+    #         for _old_hparam_key in CHECKPOINT_PAST_HPARAMS_KEYS:
+    #             cls_kwargs_loaded.update(checkpoint.get(_old_hparam_key, {}))
+
+    #         # 2. Try to restore model hparams from checkpoint using the new key
+    #         _new_hparam_key = cls.CHECKPOINT_HYPER_PARAMS_KEY
+    #         cls_kwargs_loaded.update(checkpoint.get(_new_hparam_key))
+
+    #         # 3. Ensure that `cls_kwargs_old` has the right type, back compatibility between dict and Namespace
+    #         cls_kwargs_loaded = _convert_loaded_hparams(
+    #             cls_kwargs_loaded, checkpoint.get(cls.CHECKPOINT_HYPER_PARAMS_TYPE)
+    #         )
+
+    #         # 4. Update cls_kwargs_new with cls_kwargs_old, such that new has higher priority
+    #         args_name = checkpoint.get(cls.CHECKPOINT_HYPER_PARAMS_NAME)
+    #         if args_name and args_name in cls_init_args_name:
+    #             cls_kwargs_loaded = {args_name: cls_kwargs_loaded}
+
+    #     _cls_kwargs = {}
+    #     _cls_kwargs.update(cls_kwargs_loaded)
+    #     _cls_kwargs.update(cls_kwargs_new)
+
+    #     if not cls_spec.varkw:
+    #         # filter kwargs according to class init unless it allows any argument via kwargs
+    #         _cls_kwargs = {k: v for k, v in _cls_kwargs.items() if k in cls_init_args_name}
+
+    #     model = cls(**_cls_kwargs)
+
+    #     # give model a chance to load something
+    #     model.on_load_checkpoint(checkpoint)
+
+    #     # load the state_dict on the model automatically
+    #     model.load_state_dict(checkpoint['state_dict'], strict=strict)
+
+    #     return model
